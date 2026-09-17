@@ -1,0 +1,6 @@
+{
+  "name": "Milestone Domestic Services",
+  "description": "Home help in Kampala: domestic worker vetting, training, and digital contract signing along Agenda, Kyaliwajjala - Naalya Rd.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

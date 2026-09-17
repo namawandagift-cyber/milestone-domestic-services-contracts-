@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 110" width="100%" height="100%">
+  <!-- Icon Mark -->
+  <g transform="translate(10, 8)">
+    <!-- Roof / Chevron Gable (Green) -->
+    <path d="M 45 6 L 85 36 L 77 42 L 45 17 L 13 42 L 5 36 Z" fill="#235c27" />
+
+    <!-- Left Person (Blue) -->
+    <!-- Head -->
+    <circle cx="31" cy="38" r="5.5" fill="#009fe3" />
+    <!-- Body -->
+    <path d="M 23 58 C 23 48, 39 48, 39 58 Z" fill="#009fe3" />
+
+    <!-- Center Person (Green - Taller) -->
+    <!-- Head -->
+    <circle cx="45" cy="31" r="6" fill="#235c27" />
+    <!-- Body -->
+    <path d="M 36 58 C 36 45, 54 45, 54 58 Z" fill="#235c27" />
+
+    <!-- Right Person (Purple) -->
+    <!-- Head -->
+    <circle cx="59" cy="38" r="5.5" fill="#52247f" />
+    <!-- Body -->
+    <path d="M 51 58 C 51 48, 67 48, 67 58 Z" fill="#52247f" />
+
+    <!-- Cupped Supporting Hands (Dark Charcoal/Black) -->
+    <!-- Left Hand -->
+    <path d="M 12 47 C 14 55, 17 65, 29 73 C 33 76, 39 77, 43 78 C 38 78, 29 74, 23 68 C 17 62, 14 55, 12 47 Z" fill="#1a1a1a" />
+    <path d="M 15 50 C 18 64, 27 75, 43 78 C 35 77, 24 72, 18 62 C 14 55, 13 50, 15 50 Z" fill="#1a1a1a" />
+    <!-- Left cupping palm & fingers -->
+    <path d="M 13 46 C 18 56, 26 73, 44 77 C 40 76, 32 74, 25 66 C 18 59, 14 51, 13 46 Z" fill="#1a1a1a" />
+
+    <!-- Right Hand -->
+    <path d="M 77 46 C 72 56, 64 73, 46 77 C 50 76, 58 74, 65 66 C 72 59, 76 51, 77 46 Z" fill="#1a1a1a" />
+
+    <!-- Solid unified hand silhouette beneath people -->
+    <path d="M 15 47 C 15 62, 27 77, 45 78 C 63 77, 75 62, 75 47 C 72 55, 63 68, 45 68 C 27 68, 18 55, 15 47 Z" fill="#1a1a1a" />
+  </g>
+
+  <!-- Wordmark Text -->
+  <g transform="translate(110, 10)">
+    <!-- "Milestone" in Heavy Royal Purple -->
+    <text x="0" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Arial Black', sans-serif" font-weight="900" font-size="44" fill="#52247f" letter-spacing="-1">Milestone</text>
+
+    <!-- "Domestic Services Ltd" in Forest Green -->
+    <text x="0" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif" font-weight="800" font-size="19" fill="#235c27" letter-spacing="0.2">Domestic Services Ltd</text>
+
+    <!-- Tagline: "Professionalizing domestic work" in Dark Charcoal -->
+    <text x="0" y="81" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif" font-weight="700" font-size="12" fill="#1a1a1a" letter-spacing="0.1">Professionalizing domestic work</text>
+  </g>
+</svg>
