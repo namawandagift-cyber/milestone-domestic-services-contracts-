@@ -3,7 +3,6 @@ import { useState, useEffect } from 'react';
 import { ContractDetails, SignerRole } from './types';
 
 import {
-  getStoredContracts,
   fetchContractsFromDatabase,
   saveContract,
   deleteContract,
@@ -18,7 +17,6 @@ import { downloadContractPdf } from './utils/pdfGenerator';
 import { MilestoneLogo } from './components/MilestoneLogo';
 import { MilestoneLocationProfile } from './components/MilestoneLocationProfile';
 import { ExpiredLinkView } from './components/ExpiredLinkView';
-
 import { MapPin } from 'lucide-react';
 
 type AdminView =
@@ -131,11 +129,9 @@ export default function App() {
       try {
         const parsed = parseTokenFromUrl();
 
-        /*
-         * ====================================================
-         * SIGNING LINK
-         * ====================================================
-         */
+        // =====================================================
+        // SIGNING LINK
+        // =====================================================
 
         if (parsed?.token) {
           setClientToken(parsed.token);
@@ -175,17 +171,15 @@ export default function App() {
           }
 
           /*
-           * Token genuinely could not be resolved.
+           * Token could not be resolved.
            */
           setTokenError(true);
           return;
         }
 
-        /*
-         * ====================================================
-         * NORMAL ADMIN LOAD
-         * ====================================================
-         */
+        // =====================================================
+        // NORMAL ADMIN LOAD
+        // =====================================================
 
         const loaded =
           await fetchContractsFromDatabase();
@@ -205,7 +199,11 @@ export default function App() {
           setClientRole(null);
           setTokenError(true);
         } else {
-          setContracts(getStoredContracts());
+          /*
+           * We intentionally do not manufacture a saved
+           * contract from local memory here.
+           */
+          setContracts([]);
         }
       }
     };
@@ -224,7 +222,7 @@ export default function App() {
       setTokenError(false);
 
       /*
-       * Always resolve the token from the database.
+       * Always resolve the token from Google Sheets.
        */
       const match = await getContractByToken(token);
 
@@ -237,11 +235,12 @@ export default function App() {
       }
 
       /*
-       * Use ONE stable signing URL format.
+       * Use one stable signing URL format.
        *
        * Example:
        * https://yourapp.vercel.app/?token=emp_xxxxx
        */
+
       const newUrl =
         `${window.location.origin}/?token=${encodeURIComponent(
           token
@@ -299,8 +298,6 @@ export default function App() {
         'Failed to refresh contracts:',
         error
       );
-
-      setContracts(getStoredContracts());
     }
   };
 
@@ -312,20 +309,25 @@ export default function App() {
     contract: ContractDetails
   ) => {
     try {
+      console.log(
+        'Saving contract to Google Sheets:',
+        contract
+      );
+
       /*
-       * saveContract() creates/preserves the permanent
-       * employer and worker tokens.
+       * saveContract() now waits for Google Apps Script
+       * to confirm the database save.
        */
       const savedContract =
         await saveContract(contract);
 
-      /*
-       * Use the actual saved contract immediately.
-       */
-      setSelectedContract(savedContract);
+      console.log(
+        'Contract successfully saved:',
+        savedContract
+      );
 
       /*
-       * Refresh from Google Sheets.
+       * Refresh directly from Google Sheets.
        */
       const updatedContracts =
         await fetchContractsFromDatabase();
@@ -333,7 +335,7 @@ export default function App() {
       setContracts(updatedContracts);
 
       /*
-       * Find the database version.
+       * Find the confirmed database version.
        */
       const databaseContract =
         updatedContracts.find(
@@ -341,11 +343,27 @@ export default function App() {
             item.id === savedContract.id
         );
 
+      /*
+       * If Google Sheets did not return the contract,
+       * treat that as a failed save rather than showing
+       * an unsaved local contract.
+       */
+      if (!databaseContract) {
+        throw new Error(
+          'The contract was saved but could not be confirmed in Google Sheets.'
+        );
+      }
+
       setSelectedContract(
-        databaseContract || savedContract
+        databaseContract
       );
 
+      setEditingContract(null);
       setActiveView('preview');
+
+      alert(
+        'Contract saved successfully to Google Sheets.'
+      );
     } catch (error) {
       console.error(
         'Failed to save contract:',
@@ -353,14 +371,15 @@ export default function App() {
       );
 
       /*
-       * Keep UI responsive if database request fails.
+       * IMPORTANT:
+       *
+       * Do NOT put the unsaved contract into preview.
+       * Do NOT treat local memory as a successful save.
        */
-      setContracts(getStoredContracts());
-      setSelectedContract(contract);
-      setActiveView('preview');
-
       alert(
-        'The contract could not be saved to the database. Please check your Apps Script connection.'
+        error instanceof Error
+          ? `The contract could not be saved.\n\n${error.message}`
+          : 'The contract could not be saved to Google Sheets. Please check the browser console.'
       );
     }
   };
@@ -399,7 +418,9 @@ export default function App() {
       );
 
       alert(
-        'The contract could not be deleted. Please check your Apps Script connection.'
+        error instanceof Error
+          ? `The contract could not be deleted.\n\n${error.message}`
+          : 'The contract could not be deleted. Please check your Apps Script connection.'
       );
     }
   };
@@ -418,7 +439,7 @@ export default function App() {
 
     try {
       /*
-       * Refresh Google Sheets.
+       * Refresh from Google Sheets.
        */
       const refreshed =
         await fetchContractsFromDatabase();
@@ -456,15 +477,10 @@ export default function App() {
 
       /*
        * Keep the signed contract visible.
+       *
+       * We do not claim that the database refresh
+       * succeeded.
        */
-      setContracts(getStoredContracts());
-
-      if (
-        selectedContract?.id ===
-        updated.id
-      ) {
-        setSelectedContract(updated);
-      }
     }
 
     /*
@@ -675,10 +691,21 @@ export default function App() {
               }}
 
               onUpdateContract={(updated) => {
+                /*
+                 * This callback updates the currently
+                 * displayed contract.
+                 *
+                 * The actual database save should happen
+                 * through saveContract().
+                 */
                 setSelectedContract(updated);
 
-                setContracts(
-                  getStoredContracts()
+                setContracts((current) =>
+                  current.map((contract) =>
+                    contract.id === updated.id
+                      ? updated
+                      : contract
+                  )
                 );
               }}
 
@@ -746,7 +773,6 @@ export default function App() {
           </span>
 
         </div>
-
       </footer>
     </div>
   );
