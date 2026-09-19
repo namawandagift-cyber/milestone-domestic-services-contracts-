@@ -1,236 +1,697 @@
-import { ContractDetails, ContractStatus, SignatureRecord, WitnessRecord } from '../types';
-import { INITIAL_CONTRACTS } from '../data/initialContracts';
+import {
+  ContractDetails,
+  ContractStatus,
+  SignatureRecord,
+  WitnessRecord,
+} from '../types';
 
-// In-memory runtime contract cache (backed strictly by the database server, ZERO localStorage)
-let memoryContracts: ContractDetails[] = [...INITIAL_CONTRACTS];
+/**
+ * ============================================================
+ * MILESTONE CONTRACT STORAGE
+ * Google Apps Script + Google Sheets
+ *
+ * Google Sheets is the source of truth.
+ * The in-memory array is only a temporary UI cache.
+ * ============================================================
+ */
+
+let memoryContracts: ContractDetails[] = [];
 let isInitialized = false;
 
-export function generateSecureToken(prefix: 'emp' | 'wrk'): string {
-  const randomBytes = new Uint8Array(8);
+/**
+ * Get the Google Apps Script Web App URL.
+ */
+function getAppsScriptUrl(): string {
+  const url = (import.meta as any).env?.VITE_APPS_SCRIPT_URL;
+
+  return typeof url === 'string' ? url.trim() : '';
+}
+
+/**
+ * ============================================================
+ * SECURE SIGNING TOKEN
+ * ============================================================
+ */
+
+export function generateSecureToken(
+  prefix: 'emp' | 'wrk'
+): string {
+  const randomBytes = new Uint8Array(16);
+
   crypto.getRandomValues(randomBytes);
-  const hex = Array.from(randomBytes, b => b.toString(16).padStart(2, '0')).join('');
+
+  const hex = Array.from(randomBytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
   return `${prefix}_${hex}`;
 }
 
 /**
- * Fetch all contracts directly from the backend database server
+ * ============================================================
+ * FETCH ALL CONTRACTS FROM GOOGLE SHEETS
+ * ============================================================
  */
-export async function fetchContractsFromDatabase(): Promise<ContractDetails[]> {
-  try {
-    const response = await fetch('/api/contracts');
-    if (!response.ok) {
-      throw new Error(`Database error: ${response.statusText}`);
-    }
-    const data = await response.json();
-    if (Array.isArray(data) && data.length > 0) {
-      memoryContracts = data;
-      isInitialized = true;
-      return data;
-    }
+
+export async function fetchContractsFromDatabase(): Promise<
+  ContractDetails[]
+> {
+  const url = getAppsScriptUrl();
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
     return memoryContracts;
-  } catch (err) {
-    console.warn('Database fetch error, using local database cache:', err);
+  }
+
+  try {
+    const endpoint = url.includes('?')
+      ? `${url}&action=getContracts`
+      : `${url}?action=getContracts`;
+
+    const response = await fetch(endpoint);
+
+    if (!response.ok) {
+      throw new Error(
+        `Apps Script HTTP ${response.status}`
+      );
+    }
+
+    const data = await response.json();
+
+    if (
+      data.success &&
+      Array.isArray(data.contracts)
+    ) {
+      memoryContracts = data.contracts;
+      isInitialized = true;
+
+      return memoryContracts;
+    }
+
+    throw new Error(
+      data.error ||
+        'Apps Script returned an invalid contracts response.'
+    );
+  } catch (error) {
+    console.error(
+      'Failed to fetch contracts from Google Sheets:',
+      error
+    );
+
     return memoryContracts;
   }
 }
 
 /**
- * Get stored contracts from database cache
+ * ============================================================
+ * CURRENT MEMORY CACHE
+ * ============================================================
  */
+
 export function getStoredContracts(): ContractDetails[] {
-  // If not yet initialized, trigger initial database fetch in background
-  if (!isInitialized) {
-    fetchContractsFromDatabase().catch(() => {});
-  }
   return memoryContracts;
 }
 
 /**
- * Save array of contracts to database
+ * ============================================================
+ * SAVE CONTRACT
+ *
+ * Tokens are preserved permanently.
+ * Existing tokens are NEVER regenerated.
+ * ============================================================
  */
-export async function saveContracts(contracts: ContractDetails[]): Promise<void> {
-  memoryContracts = contracts;
-  // Push each contract to the database
-  for (const contract of contracts) {
-    try {
-      await fetch('/api/contracts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(contract),
-      });
-    } catch (err) {
-      console.error('Failed to sync contract to database:', err);
-    }
-  }
-}
 
-export function getContractById(id: string): ContractDetails | undefined {
-  return memoryContracts.find(c => c.id === id);
-}
+export async function saveContract(
+  updated: ContractDetails
+): Promise<ContractDetails> {
+  const url = getAppsScriptUrl();
 
-export function getContractByToken(
-  token: string
-): { contract: ContractDetails; role: 'employer' | 'worker' } | null {
-  for (const contract of memoryContracts) {
-    if (contract.employerToken === token) {
-      return { contract, role: 'employer' };
-    }
-    if (contract.workerToken === token) {
-      return { contract, role: 'worker' };
-    }
-  }
-  return null;
-}
+  const existing = memoryContracts.find(
+    (contract) => contract.id === updated.id
+  );
 
-/**
- * Save / upsert a single contract to the database
- */
-export function saveContract(updated: ContractDetails): ContractDetails {
-  const index = memoryContracts.findIndex(c => c.id === updated.id);
   const updatedContract: ContractDetails = {
     ...updated,
+
+    /*
+     * Preserve existing permanent signing tokens.
+     */
+    employerToken:
+      updated.employerToken ||
+      existing?.employerToken ||
+      generateSecureToken('emp'),
+
+    workerToken:
+      updated.workerToken ||
+      existing?.workerToken ||
+      generateSecureToken('wrk'),
+
     updatedAt: new Date().toISOString(),
   };
 
-  if (index >= 0) {
-    memoryContracts = [
-      ...memoryContracts.slice(0, index),
-      updatedContract,
-      ...memoryContracts.slice(index + 1),
-    ];
-  } else {
-    memoryContracts = [updatedContract, ...memoryContracts];
+  /*
+   * Update local cache immediately.
+   */
+  updateMemoryContract(updatedContract);
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
+    return updatedContract;
   }
 
-  // Persist directly to backend database server
-  fetch('/api/contracts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(updatedContract),
-  }).catch((err) => {
-    console.error('Database write error:', err);
-  });
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        action: 'saveContract',
+        contract: updatedContract,
+      }),
+      mode: 'no-cors',
+    });
+
+    /*
+     * Re-fetch from Google Sheets so the UI has
+     * the database version.
+     */
+    const refreshedContracts =
+      await fetchContractsFromDatabase();
+
+    const refreshedContract =
+      refreshedContracts.find(
+        (contract) =>
+          contract.id === updatedContract.id
+      );
+
+    if (refreshedContract) {
+      return refreshedContract;
+    }
+  } catch (error) {
+    console.error(
+      'Failed to save contract to Google Sheets:',
+      error
+    );
+  }
 
   return updatedContract;
 }
 
 /**
- * Delete a contract from the database
+ * ============================================================
+ * DELETE CONTRACT
+ * ============================================================
  */
-export function deleteContract(id: string): void {
-  memoryContracts = memoryContracts.filter(c => c.id !== id);
 
-  // Send DELETE to backend database server
-  fetch(`/api/contracts/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  }).catch((err) => {
-    console.error('Database delete error:', err);
-  });
+export async function deleteContract(
+  id: string
+): Promise<void> {
+  const url = getAppsScriptUrl();
+
+  memoryContracts = memoryContracts.filter(
+    (contract) => contract.id !== id
+  );
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
+    return;
+  }
+
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        action: 'deleteContract',
+        id,
+      }),
+      mode: 'no-cors',
+    });
+  } catch (error) {
+    console.error(
+      'Failed to delete contract:',
+      error
+    );
+  }
 }
 
 /**
- * Submit employer signature to the database
+ * ============================================================
+ * FIND CONTRACT BY SIGNING TOKEN
+ *
+ * First checks memory.
+ * If not found, asks Google Apps Script.
+ * ============================================================
  */
-export function submitEmployerSignature(
+
+export async function getContractByToken(
+  token: string
+): Promise<{
+  contract: ContractDetails;
+  role: 'employer' | 'worker';
+} | null> {
+  if (!token) {
+    return null;
+  }
+
+  /*
+   * First check memory.
+   */
+  const cachedContract =
+    memoryContracts.find(
+      (contract) =>
+        contract.employerToken === token ||
+        contract.workerToken === token
+    );
+
+  if (cachedContract) {
+    return {
+      contract: cachedContract,
+      role:
+        cachedContract.employerToken === token
+          ? 'employer'
+          : 'worker',
+    };
+  }
+
+  /*
+   * If not in memory, ask Google Apps Script.
+   */
+  const url = getAppsScriptUrl();
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
+    return null;
+  }
+
+  try {
+    const endpoint = url.includes('?')
+      ? `${url}&action=getContractByToken&token=${encodeURIComponent(
+          token
+        )}`
+      : `${url}?action=getContractByToken&token=${encodeURIComponent(
+          token
+        )}`;
+
+    const response = await fetch(endpoint);
+
+    if (!response.ok) {
+      throw new Error(
+        `Apps Script HTTP ${response.status}`
+      );
+    }
+
+    const data = await response.json();
+
+    if (
+      data.success &&
+      data.contract &&
+      (data.role === 'employer' ||
+        data.role === 'worker')
+    ) {
+      /*
+       * Put the database contract into memory.
+       */
+      updateMemoryContract(data.contract);
+
+      return {
+        contract: data.contract,
+        role: data.role,
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error(
+      'Failed to resolve signing token from Google Apps Script:',
+      error
+    );
+
+    return null;
+  }
+}
+
+/**
+ * ============================================================
+ * EMPLOYER SIGNATURE
+ *
+ * Saves signature to Apps Script and then fetches
+ * the actual updated contract from Google Sheets.
+ * ============================================================
+ */
+
+export async function submitEmployerSignature(
   contractId: string,
   signature: SignatureRecord
-): ContractDetails | null {
-  const contract = getContractById(contractId);
-  if (!contract) return null;
+): Promise<ContractDetails | null> {
+  const contract = memoryContracts.find(
+    (c) => c.id === contractId
+  );
 
-  const nextStatus: ContractStatus = 'Waiting for Worker';
-  const updated: ContractDetails = {
+  if (!contract) {
+    console.error(
+      'Contract not found:',
+      contractId
+    );
+
+    return null;
+  }
+
+  /*
+   * Temporary local version for immediate UI feedback.
+   */
+  const localUpdated: ContractDetails = {
     ...contract,
+
     employerSignature: signature,
-    status: nextStatus,
+
+    status:
+      'Waiting for Worker' as ContractStatus,
+
     updatedAt: new Date().toISOString(),
   };
 
-  // Update memory cache
-  const index = memoryContracts.findIndex(c => c.id === contractId);
-  if (index >= 0) {
-    memoryContracts[index] = updated;
+  updateMemoryContract(localUpdated);
+
+  const url = getAppsScriptUrl();
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
+    return localUpdated;
   }
 
-  // Persist signature directly to database
-  fetch(`/api/contracts/${encodeURIComponent(contractId)}/signature/employer`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ signature }),
-  }).catch((err) => {
-    console.error('Database signature error:', err);
-  });
+  try {
+    /*
+     * Send signature to Google Apps Script.
+     */
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        action: 'saveSignature',
+        contractId,
+        role: 'employer',
+        signature,
+      }),
+      mode: 'no-cors',
+    });
 
-  return updated;
+    /*
+     * IMPORTANT:
+     *
+     * Because the POST uses no-cors, we cannot read
+     * the Apps Script response.
+     *
+     * Therefore, fetch the database again.
+     */
+    const refreshedContracts =
+      await fetchContractsFromDatabase();
+
+    const refreshedContract =
+      refreshedContracts.find(
+        (c) => c.id === contractId
+      );
+
+    if (refreshedContract) {
+      updateMemoryContract(
+        refreshedContract
+      );
+
+      return refreshedContract;
+    }
+
+    return localUpdated;
+  } catch (error) {
+    console.error(
+      'Employer signature database error:',
+      error
+    );
+
+    return localUpdated;
+  }
 }
 
 /**
- * Submit worker signature to the database
+ * ============================================================
+ * WORKER SIGNATURE
+ *
+ * Saves signature to Apps Script and then fetches
+ * the actual updated contract from Google Sheets.
+ * ============================================================
  */
-export function submitWorkerSignature(
+
+export async function submitWorkerSignature(
   contractId: string,
   signature: SignatureRecord
-): ContractDetails | null {
-  const contract = getContractById(contractId);
-  if (!contract) return null;
+): Promise<ContractDetails | null> {
+  const contract = memoryContracts.find(
+    (c) => c.id === contractId
+  );
 
-  const updated: ContractDetails = {
+  if (!contract) {
+    console.error(
+      'Contract not found:',
+      contractId
+    );
+
+    return null;
+  }
+
+  /*
+   * Temporary local version.
+   */
+  const localUpdated: ContractDetails = {
     ...contract,
+
     workerSignature: signature,
+
     status: 'Completed',
+
     updatedAt: new Date().toISOString(),
   };
 
-  // Update memory cache
-  const index = memoryContracts.findIndex(c => c.id === contractId);
-  if (index >= 0) {
-    memoryContracts[index] = updated;
+  updateMemoryContract(localUpdated);
+
+  const url = getAppsScriptUrl();
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
+    return localUpdated;
   }
 
-  // Persist signature directly to database
-  fetch(`/api/contracts/${encodeURIComponent(contractId)}/signature/worker`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ signature }),
-  }).catch((err) => {
-    console.error('Database signature error:', err);
-  });
+  try {
+    /*
+     * Send signature to Google Apps Script.
+     */
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        action: 'saveSignature',
+        contractId,
+        role: 'worker',
+        signature,
+      }),
+      mode: 'no-cors',
+    });
 
-  return updated;
+    /*
+     * Fetch the actual database version.
+     */
+    const refreshedContracts =
+      await fetchContractsFromDatabase();
+
+    const refreshedContract =
+      refreshedContracts.find(
+        (c) => c.id === contractId
+      );
+
+    if (refreshedContract) {
+      updateMemoryContract(
+        refreshedContract
+      );
+
+      return refreshedContract;
+    }
+
+    return localUpdated;
+  } catch (error) {
+    console.error(
+      'Worker signature database error:',
+      error
+    );
+
+    return localUpdated;
+  }
 }
 
 /**
- * Submit witness signature to the database
+ * ============================================================
+ * WITNESS SIGNATURE
+ * ============================================================
  */
-export function submitWitnessSignature(
+
+export async function submitWitnessSignature(
   contractId: string,
   witness: WitnessRecord
-): ContractDetails | null {
-  const contract = getContractById(contractId);
-  if (!contract) return null;
+): Promise<ContractDetails | null> {
+  const contract = memoryContracts.find(
+    (c) => c.id === contractId
+  );
 
-  const isFullySigned = Boolean(contract.employerSignature && contract.workerSignature);
-  const updated: ContractDetails = {
+  if (!contract) {
+    console.error(
+      'Contract not found:',
+      contractId
+    );
+
+    return null;
+  }
+
+  const isFullySigned = Boolean(
+    contract.employerSignature &&
+      contract.workerSignature
+  );
+
+  const localUpdated: ContractDetails = {
     ...contract,
+
     witnessSignature: witness,
-    status: isFullySigned ? 'Completed' : contract.status,
+
+    status: isFullySigned
+      ? 'Completed'
+      : contract.status,
+
     updatedAt: new Date().toISOString(),
   };
 
-  // Update memory cache
-  const index = memoryContracts.findIndex(c => c.id === contractId);
-  if (index >= 0) {
-    memoryContracts[index] = updated;
+  updateMemoryContract(localUpdated);
+
+  const url = getAppsScriptUrl();
+
+  if (!url) {
+    console.error(
+      'VITE_APPS_SCRIPT_URL is not configured.'
+    );
+
+    return localUpdated;
   }
 
-  // Persist signature directly to database
-  fetch(`/api/contracts/${encodeURIComponent(contractId)}/signature/witness`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ witness }),
-  }).catch((err) => {
-    console.error('Database signature error:', err);
-  });
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        action: 'saveSignature',
+        contractId,
+        role: 'witness',
+        witness,
+      }),
+      mode: 'no-cors',
+    });
 
-  return updated;
+    /*
+     * Refresh from Google Sheets.
+     */
+    const refreshedContracts =
+      await fetchContractsFromDatabase();
+
+    const refreshedContract =
+      refreshedContracts.find(
+        (c) => c.id === contractId
+      );
+
+    if (refreshedContract) {
+      updateMemoryContract(
+        refreshedContract
+      );
+
+      return refreshedContract;
+    }
+
+    return localUpdated;
+  } catch (error) {
+    console.error(
+      'Witness signature database error:',
+      error
+    );
+
+    return localUpdated;
+  }
+}
+
+/**
+ * ============================================================
+ * UPDATE MEMORY CACHE
+ * ============================================================
+ */
+
+function updateMemoryContract(
+  updated: ContractDetails
+): void {
+  const index = memoryContracts.findIndex(
+    (c) => c.id === updated.id
+  );
+
+  if (index >= 0) {
+    memoryContracts[index] = updated;
+  } else {
+    memoryContracts.push(updated);
+  }
+}
+
+/**
+ * ============================================================
+ * GET CONTRACT BY ID
+ * ============================================================
+ */
+
+export function getContractById(
+  id: string
+): ContractDetails | undefined {
+  return memoryContracts.find(
+    (contract) => contract.id === id
+  );
+}
+
+/**
+ * ============================================================
+ * INITIALIZATION STATUS
+ * ============================================================
+ */
+
+export function getInitializationStatus(): boolean {
+  return isInitialized;
 }
