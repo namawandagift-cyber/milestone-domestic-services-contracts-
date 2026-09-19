@@ -10,8 +10,8 @@ import {
  * MILESTONE CONTRACT STORAGE
  * Google Apps Script + Google Sheets
  *
- * Google Sheets is the source of truth.
- * The in-memory array is only a temporary UI cache.
+ * Google Sheets = source of truth
+ * memoryContracts = temporary UI cache
  * ============================================================
  */
 
@@ -19,11 +19,13 @@ let memoryContracts: ContractDetails[] = [];
 let isInitialized = false;
 
 /**
- * Get the Google Apps Script Web App URL.
+ * ============================================================
+ * APPS SCRIPT URL
+ * ============================================================
  */
+
 function getAppsScriptUrl(): string {
   const url = (import.meta as any).env?.VITE_APPS_SCRIPT_URL;
-
   return typeof url === 'string' ? url.trim() : '';
 }
 
@@ -49,7 +51,7 @@ export function generateSecureToken(
 
 /**
  * ============================================================
- * FETCH ALL CONTRACTS FROM GOOGLE SHEETS
+ * FETCH ALL CONTRACTS
  * ============================================================
  */
 
@@ -71,7 +73,10 @@ export async function fetchContractsFromDatabase(): Promise<
       ? `${url}&action=getContracts`
       : `${url}?action=getContracts`;
 
-    const response = await fetch(endpoint);
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      cache: 'no-store',
+    });
 
     if (!response.ok) {
       throw new Error(
@@ -107,7 +112,7 @@ export async function fetchContractsFromDatabase(): Promise<
 
 /**
  * ============================================================
- * CURRENT MEMORY CACHE
+ * MEMORY CACHE
  * ============================================================
  */
 
@@ -119,8 +124,8 @@ export function getStoredContracts(): ContractDetails[] {
  * ============================================================
  * SAVE CONTRACT
  *
- * Tokens are preserved permanently.
- * Existing tokens are NEVER regenerated.
+ * This function guarantees that every saved contract has
+ * permanent employer and worker tokens.
  * ============================================================
  */
 
@@ -136,9 +141,6 @@ export async function saveContract(
   const updatedContract: ContractDetails = {
     ...updated,
 
-    /*
-     * Preserve existing permanent signing tokens.
-     */
     employerToken:
       updated.employerToken ||
       existing?.employerToken ||
@@ -152,8 +154,8 @@ export async function saveContract(
     updatedAt: new Date().toISOString(),
   };
 
-  /*
-   * Update local cache immediately.
+  /**
+   * Immediately update local cache.
    */
   updateMemoryContract(updatedContract);
 
@@ -179,9 +181,9 @@ export async function saveContract(
       mode: 'no-cors',
     });
 
-    /*
-     * Re-fetch from Google Sheets so the UI has
-     * the database version.
+    /**
+     * Give Google Sheets the opportunity to become
+     * the source of truth.
      */
     const refreshedContracts =
       await fetchContractsFromDatabase();
@@ -241,6 +243,11 @@ export async function deleteContract(
       }),
       mode: 'no-cors',
     });
+
+    /**
+     * Refresh local cache after deletion.
+     */
+    await fetchContractsFromDatabase();
   } catch (error) {
     console.error(
       'Failed to delete contract:',
@@ -251,10 +258,13 @@ export async function deleteContract(
 
 /**
  * ============================================================
- * FIND CONTRACT BY SIGNING TOKEN
+ * FIND CONTRACT BY TOKEN
  *
- * First checks memory.
- * If not found, asks Google Apps Script.
+ * IMPORTANT:
+ * Google Apps Script is checked FIRST.
+ *
+ * This prevents an old browser cache from deciding whether
+ * a signing link is valid.
  * ============================================================
  */
 
@@ -268,29 +278,6 @@ export async function getContractByToken(
     return null;
   }
 
-  /*
-   * First check memory.
-   */
-  const cachedContract =
-    memoryContracts.find(
-      (contract) =>
-        contract.employerToken === token ||
-        contract.workerToken === token
-    );
-
-  if (cachedContract) {
-    return {
-      contract: cachedContract,
-      role:
-        cachedContract.employerToken === token
-          ? 'employer'
-          : 'worker',
-    };
-  }
-
-  /*
-   * If not in memory, ask Google Apps Script.
-   */
   const url = getAppsScriptUrl();
 
   if (!url) {
@@ -298,7 +285,28 @@ export async function getContractByToken(
       'VITE_APPS_SCRIPT_URL is not configured.'
     );
 
-    return null;
+    /**
+     * Fallback to memory only if the backend URL
+     * is not configured.
+     */
+    const cachedContract =
+      memoryContracts.find(
+        (contract) =>
+          contract.employerToken === token ||
+          contract.workerToken === token
+      );
+
+    if (!cachedContract) {
+      return null;
+    }
+
+    return {
+      contract: cachedContract,
+      role:
+        cachedContract.employerToken === token
+          ? 'employer'
+          : 'worker',
+    };
   }
 
   try {
@@ -310,7 +318,10 @@ export async function getContractByToken(
           token
         )}`;
 
-    const response = await fetch(endpoint);
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      cache: 'no-store',
+    });
 
     if (!response.ok) {
       throw new Error(
@@ -326,8 +337,8 @@ export async function getContractByToken(
       (data.role === 'employer' ||
         data.role === 'worker')
     ) {
-      /*
-       * Put the database contract into memory.
+      /**
+       * Store the current database version locally.
        */
       updateMemoryContract(data.contract);
 
@@ -337,23 +348,45 @@ export async function getContractByToken(
       };
     }
 
+    /**
+     * The backend explicitly says the token does not exist.
+     */
     return null;
   } catch (error) {
     console.error(
-      'Failed to resolve signing token from Google Apps Script:',
+      'Failed to resolve signing token:',
       error
     );
 
-    return null;
+    /**
+     * Only use cache as a fallback when the request itself
+     * failed. A backend "not found" response is not treated
+     * as a cache hit.
+     */
+    const cachedContract =
+      memoryContracts.find(
+        (contract) =>
+          contract.employerToken === token ||
+          contract.workerToken === token
+      );
+
+    if (!cachedContract) {
+      return null;
+    }
+
+    return {
+      contract: cachedContract,
+      role:
+        cachedContract.employerToken === token
+          ? 'employer'
+          : 'worker',
+    };
   }
 }
 
 /**
  * ============================================================
  * EMPLOYER SIGNATURE
- *
- * Saves signature to Apps Script and then fetches
- * the actual updated contract from Google Sheets.
  * ============================================================
  */
 
@@ -374,17 +407,11 @@ export async function submitEmployerSignature(
     return null;
   }
 
-  /*
-   * Temporary local version for immediate UI feedback.
-   */
   const localUpdated: ContractDetails = {
     ...contract,
-
     employerSignature: signature,
-
     status:
       'Waiting for Worker' as ContractStatus,
-
     updatedAt: new Date().toISOString(),
   };
 
@@ -393,17 +420,10 @@ export async function submitEmployerSignature(
   const url = getAppsScriptUrl();
 
   if (!url) {
-    console.error(
-      'VITE_APPS_SCRIPT_URL is not configured.'
-    );
-
     return localUpdated;
   }
 
   try {
-    /*
-     * Send signature to Google Apps Script.
-     */
     await fetch(url, {
       method: 'POST',
       headers: {
@@ -419,14 +439,6 @@ export async function submitEmployerSignature(
       mode: 'no-cors',
     });
 
-    /*
-     * IMPORTANT:
-     *
-     * Because the POST uses no-cors, we cannot read
-     * the Apps Script response.
-     *
-     * Therefore, fetch the database again.
-     */
     const refreshedContracts =
       await fetchContractsFromDatabase();
 
@@ -436,10 +448,6 @@ export async function submitEmployerSignature(
       );
 
     if (refreshedContract) {
-      updateMemoryContract(
-        refreshedContract
-      );
-
       return refreshedContract;
     }
 
@@ -457,9 +465,6 @@ export async function submitEmployerSignature(
 /**
  * ============================================================
  * WORKER SIGNATURE
- *
- * Saves signature to Apps Script and then fetches
- * the actual updated contract from Google Sheets.
  * ============================================================
  */
 
@@ -480,16 +485,10 @@ export async function submitWorkerSignature(
     return null;
   }
 
-  /*
-   * Temporary local version.
-   */
   const localUpdated: ContractDetails = {
     ...contract,
-
     workerSignature: signature,
-
-    status: 'Completed',
-
+    status: 'Completed' as ContractStatus,
     updatedAt: new Date().toISOString(),
   };
 
@@ -498,17 +497,10 @@ export async function submitWorkerSignature(
   const url = getAppsScriptUrl();
 
   if (!url) {
-    console.error(
-      'VITE_APPS_SCRIPT_URL is not configured.'
-    );
-
     return localUpdated;
   }
 
   try {
-    /*
-     * Send signature to Google Apps Script.
-     */
     await fetch(url, {
       method: 'POST',
       headers: {
@@ -524,9 +516,6 @@ export async function submitWorkerSignature(
       mode: 'no-cors',
     });
 
-    /*
-     * Fetch the actual database version.
-     */
     const refreshedContracts =
       await fetchContractsFromDatabase();
 
@@ -536,10 +525,6 @@ export async function submitWorkerSignature(
       );
 
     if (refreshedContract) {
-      updateMemoryContract(
-        refreshedContract
-      );
-
       return refreshedContract;
     }
 
@@ -584,13 +569,10 @@ export async function submitWitnessSignature(
 
   const localUpdated: ContractDetails = {
     ...contract,
-
     witnessSignature: witness,
-
     status: isFullySigned
-      ? 'Completed'
+      ? ('Completed' as ContractStatus)
       : contract.status,
-
     updatedAt: new Date().toISOString(),
   };
 
@@ -599,10 +581,6 @@ export async function submitWitnessSignature(
   const url = getAppsScriptUrl();
 
   if (!url) {
-    console.error(
-      'VITE_APPS_SCRIPT_URL is not configured.'
-    );
-
     return localUpdated;
   }
 
@@ -622,9 +600,6 @@ export async function submitWitnessSignature(
       mode: 'no-cors',
     });
 
-    /*
-     * Refresh from Google Sheets.
-     */
     const refreshedContracts =
       await fetchContractsFromDatabase();
 
@@ -634,10 +609,6 @@ export async function submitWitnessSignature(
       );
 
     if (refreshedContract) {
-      updateMemoryContract(
-        refreshedContract
-      );
-
       return refreshedContract;
     }
 
@@ -654,7 +625,7 @@ export async function submitWitnessSignature(
 
 /**
  * ============================================================
- * UPDATE MEMORY CACHE
+ * UPDATE MEMORY
  * ============================================================
  */
 

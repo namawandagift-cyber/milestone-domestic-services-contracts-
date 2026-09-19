@@ -18,33 +18,67 @@ import { downloadContractPdf } from './utils/pdfGenerator';
 import { MilestoneLogo } from './components/MilestoneLogo';
 import { MilestoneLocationProfile } from './components/MilestoneLocationProfile';
 import { ExpiredLinkView } from './components/ExpiredLinkView';
+
 import { MapPin } from 'lucide-react';
 
-type AdminView = 'list' | 'create' | 'preview' | 'location';
+type AdminView =
+  | 'list'
+  | 'create'
+  | 'preview'
+  | 'location';
 
 export default function App() {
-  const [contracts, setContracts] = useState<ContractDetails[]>([]);
-  const [activeView, setActiveView] = useState<AdminView>('list');
+  const [contracts, setContracts] = useState<
+    ContractDetails[]
+  >([]);
+
+  const [activeView, setActiveView] =
+    useState<AdminView>('list');
+
   const [selectedContract, setSelectedContract] =
     useState<ContractDetails | null>(null);
+
   const [editingContract, setEditingContract] =
     useState<ContractDetails | null>(null);
 
-  // Client signing state
-  const [clientToken, setClientToken] = useState<string | null>(null);
+  // =========================================================
+  // CLIENT SIGNING STATE
+  // =========================================================
+
+  const [clientToken, setClientToken] =
+    useState<string | null>(null);
+
   const [clientContract, setClientContract] =
     useState<ContractDetails | null>(null);
-  const [clientRole, setClientRole] = useState<SignerRole | null>(null);
-  const [tokenError, setTokenError] = useState(false);
 
-  // Parse signing token from URL
+  const [clientRole, setClientRole] =
+    useState<SignerRole | null>(null);
+
+  const [tokenError, setTokenError] =
+    useState(false);
+
+  // =========================================================
+  // PARSE SIGNING TOKEN FROM URL
+  // =========================================================
+
   const parseTokenFromUrl = () => {
     const pathname = window.location.pathname;
     const hash = window.location.hash;
     const search = window.location.search;
 
-    // /sign/employer/:token
-    // /sign/worker/:token
+    /*
+     * Supported:
+     *
+     * /sign/employer/TOKEN
+     * /sign/worker/TOKEN
+     *
+     * #/sign/employer/TOKEN
+     * #/sign/worker/TOKEN
+     *
+     * ?token=TOKEN
+     * ?sign=TOKEN
+     */
+
     const pathMatch = pathname.match(
       /\/sign\/(employer|worker)\/([^/?#]+)/
     );
@@ -56,8 +90,6 @@ export default function App() {
       };
     }
 
-    // #/sign/employer/:token
-    // #/sign/worker/:token
     const hashMatch = hash.match(
       /#\/sign\/(employer|worker)\/([^/?#]+)/
     );
@@ -69,8 +101,6 @@ export default function App() {
       };
     }
 
-    // ?token=...
-    // ?sign=...
     const urlParams = new URLSearchParams(search);
 
     const token =
@@ -79,7 +109,9 @@ export default function App() {
 
     if (token) {
       const roleParam =
-        urlParams.get('role') as SignerRole | null;
+        urlParams.get('role') as
+          | SignerRole
+          | null;
 
       return {
         roleHint: roleParam || undefined,
@@ -90,57 +122,110 @@ export default function App() {
     return null;
   };
 
-  // ---------------------------------------------------------
+  // =========================================================
   // INITIAL APP LOAD
-  // ---------------------------------------------------------
+  // =========================================================
 
   useEffect(() => {
     const initializeApp = async () => {
       try {
         const parsed = parseTokenFromUrl();
 
-        // If this is a signing link, resolve the token directly
-        // from Google Sheets through Apps Script.
+        /*
+         * ====================================================
+         * SIGNING LINK
+         * ====================================================
+         */
+
         if (parsed?.token) {
           setClientToken(parsed.token);
+          setClientContract(null);
+          setClientRole(null);
           setTokenError(false);
 
-          const match = await getContractByToken(parsed.token);
+          /*
+           * Resolve the token from Google Sheets.
+           */
+          const match = await getContractByToken(
+            parsed.token
+          );
 
           if (match) {
             setClientContract(match.contract);
-            setClientRole(parsed.roleHint || match.role);
-          } else {
-            setTokenError(true);
+
+            setClientRole(
+              parsed.roleHint || match.role
+            );
+
+            /*
+             * Refresh admin cache in background.
+             */
+            fetchContractsFromDatabase()
+              .then((loaded) => {
+                setContracts(loaded);
+              })
+              .catch((error) => {
+                console.error(
+                  'Background contract refresh failed:',
+                  error
+                );
+              });
+
+            return;
           }
 
-          // Also load contracts for the admin cache.
-          const loaded = await fetchContractsFromDatabase();
-          setContracts(loaded);
-
+          /*
+           * Token genuinely could not be resolved.
+           */
+          setTokenError(true);
           return;
         }
 
-        // Normal admin application load
-        const loaded = await fetchContractsFromDatabase();
+        /*
+         * ====================================================
+         * NORMAL ADMIN LOAD
+         * ====================================================
+         */
+
+        const loaded =
+          await fetchContractsFromDatabase();
+
         setContracts(loaded);
       } catch (error) {
-        console.error('Failed to initialize application:', error);
-        setContracts([]);
+        console.error(
+          'Failed to initialize application:',
+          error
+        );
+
+        const parsed = parseTokenFromUrl();
+
+        if (parsed?.token) {
+          setClientToken(parsed.token);
+          setClientContract(null);
+          setClientRole(null);
+          setTokenError(true);
+        } else {
+          setContracts(getStoredContracts());
+        }
       }
     };
 
     initializeApp();
   }, []);
 
-  // ---------------------------------------------------------
+  // =========================================================
   // OPEN CLIENT SIGNING PAGE
-  // ---------------------------------------------------------
+  // =========================================================
 
-  const handleOpenClientSigning = async (token: string) => {
+  const handleOpenClientSigning = async (
+    token: string
+  ) => {
     try {
       setTokenError(false);
 
+      /*
+       * Always resolve the token from the database.
+       */
       const match = await getContractByToken(token);
 
       if (!match) {
@@ -151,19 +236,35 @@ export default function App() {
         return;
       }
 
+      /*
+       * Use ONE stable signing URL format.
+       *
+       * Example:
+       * https://yourapp.vercel.app/?token=emp_xxxxx
+       */
+      const newUrl =
+        `${window.location.origin}/?token=${encodeURIComponent(
+          token
+        )}`;
+
+      window.history.pushState(
+        {
+          signing: true,
+          token,
+        },
+        '',
+        newUrl
+      );
+
       setClientToken(token);
       setClientContract(match.contract);
       setClientRole(match.role);
       setTokenError(false);
-
-      // Use query parameter instead of /sign/... path.
-      // This avoids Vercel SPA routing problems.
-      const newUrl =
-        `${window.location.origin}?token=${encodeURIComponent(token)}`;
-
-      window.history.pushState({}, '', newUrl);
     } catch (error) {
-      console.error('Failed to open signing page:', error);
+      console.error(
+        'Failed to open signing page:',
+        error
+      );
 
       setClientToken(token);
       setClientContract(null);
@@ -172,9 +273,9 @@ export default function App() {
     }
   };
 
-  // ---------------------------------------------------------
+  // =========================================================
   // RETURN TO ADMIN
-  // ---------------------------------------------------------
+  // =========================================================
 
   const handleBackToAdmin = async () => {
     setClientToken(null);
@@ -182,47 +283,78 @@ export default function App() {
     setClientRole(null);
     setTokenError(false);
 
-    const newUrl = window.location.origin;
-    window.history.pushState({}, '', newUrl);
+    window.history.replaceState(
+      {},
+      '',
+      window.location.origin
+    );
 
     try {
-      const loaded = await fetchContractsFromDatabase();
+      const loaded =
+        await fetchContractsFromDatabase();
+
       setContracts(loaded);
     } catch (error) {
-      console.error('Failed to refresh contracts:', error);
+      console.error(
+        'Failed to refresh contracts:',
+        error
+      );
 
-      const refreshed = getStoredContracts();
-      setContracts(refreshed);
+      setContracts(getStoredContracts());
     }
   };
 
-  // ---------------------------------------------------------
+  // =========================================================
   // SAVE CONTRACT
-  // ---------------------------------------------------------
+  // =========================================================
 
-  const handleSaveContract = async (contract: ContractDetails) => {
+  const handleSaveContract = async (
+    contract: ContractDetails
+  ) => {
     try {
-      await saveContract(contract);
+      /*
+       * saveContract() creates/preserves the permanent
+       * employer and worker tokens.
+       */
+      const savedContract =
+        await saveContract(contract);
 
-      // Refresh from Google Sheets so the UI reflects
-      // the actual database state.
+      /*
+       * Use the actual saved contract immediately.
+       */
+      setSelectedContract(savedContract);
+
+      /*
+       * Refresh from Google Sheets.
+       */
       const updatedContracts =
         await fetchContractsFromDatabase();
 
       setContracts(updatedContracts);
 
-      const savedContract =
+      /*
+       * Find the database version.
+       */
+      const databaseContract =
         updatedContracts.find(
-          (item) => item.id === contract.id
-        ) || contract;
+          (item) =>
+            item.id === savedContract.id
+        );
 
-      setSelectedContract(savedContract);
+      setSelectedContract(
+        databaseContract || savedContract
+      );
+
       setActiveView('preview');
     } catch (error) {
-      console.error('Failed to save contract:', error);
+      console.error(
+        'Failed to save contract:',
+        error
+      );
 
-      // Keep the local UI responsive even if the
-      // database request failed.
+      /*
+       * Keep UI responsive if database request fails.
+       */
       setContracts(getStoredContracts());
       setSelectedContract(contract);
       setActiveView('preview');
@@ -233,12 +365,18 @@ export default function App() {
     }
   };
 
-  // ---------------------------------------------------------
+  // =========================================================
   // DELETE CONTRACT
-  // ---------------------------------------------------------
+  // =========================================================
 
-  const handleDeleteContract = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this contract?')) {
+  const handleDeleteContract = async (
+    id: string
+  ) => {
+    if (
+      !confirm(
+        'Are you sure you want to delete this contract?'
+      )
+    ) {
       return;
     }
 
@@ -255,7 +393,10 @@ export default function App() {
         setActiveView('list');
       }
     } catch (error) {
-      console.error('Failed to delete contract:', error);
+      console.error(
+        'Failed to delete contract:',
+        error
+      );
 
       alert(
         'The contract could not be deleted. Please check your Apps Script connection.'
@@ -263,31 +404,48 @@ export default function App() {
     }
   };
 
-  // ---------------------------------------------------------
+  // =========================================================
   // SIGNATURE COMPLETED
-  // ---------------------------------------------------------
+  // =========================================================
 
   const handleClientSignatureComplete = async (
     updated: ContractDetails
   ) => {
+    /*
+     * Immediately keep the signed contract visible.
+     */
     setClientContract(updated);
 
     try {
+      /*
+       * Refresh Google Sheets.
+       */
       const refreshed =
         await fetchContractsFromDatabase();
 
       setContracts(refreshed);
 
+      /*
+       * Find the newest database version.
+       */
       const refreshedContract =
         refreshed.find(
-          (contract) => contract.id === updated.id
+          (contract) =>
+            contract.id === updated.id
         );
 
       if (refreshedContract) {
-        setClientContract(refreshedContract);
+        setClientContract(
+          refreshedContract
+        );
 
-        if (selectedContract?.id === updated.id) {
-          setSelectedContract(refreshedContract);
+        if (
+          selectedContract?.id ===
+          updated.id
+        ) {
+          setSelectedContract(
+            refreshedContract
+          );
         }
       }
     } catch (error) {
@@ -296,19 +454,31 @@ export default function App() {
         error
       );
 
-      // Keep the updated contract visible even if
-      // refreshing the database fails.
+      /*
+       * Keep the signed contract visible.
+       */
       setContracts(getStoredContracts());
 
-      if (selectedContract?.id === updated.id) {
+      if (
+        selectedContract?.id ===
+        updated.id
+      ) {
         setSelectedContract(updated);
       }
     }
+
+    /*
+     * IMPORTANT:
+     *
+     * We do NOT change the browser URL here.
+     *
+     * The original signing token remains active.
+     */
   };
 
-  // ---------------------------------------------------------
+  // =========================================================
   // CLIENT SIGNING PAGE
-  // ---------------------------------------------------------
+  // =========================================================
 
   if (clientToken) {
     if (
@@ -334,14 +504,15 @@ export default function App() {
     );
   }
 
-  // ---------------------------------------------------------
+  // =========================================================
   // ADMIN CONTRACT PORTAL
-  // ---------------------------------------------------------
+  // =========================================================
 
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-900 font-sans flex flex-col">
 
       {/* Admin Navigation */}
+
       <header className="bg-white border-b border-neutral-300 border-t-4 border-t-[#235c27] no-print">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-18 py-2 flex items-center justify-between">
 
@@ -413,7 +584,10 @@ export default function App() {
       </header>
 
       {/* Main Content */}
+
       <main className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 md:p-8">
+
+        {/* Contracts List */}
 
         {activeView === 'list' && (
           <AdminContractsList
@@ -439,9 +613,13 @@ export default function App() {
               setActiveView('preview');
             }}
 
-            onDeleteClick={handleDeleteContract}
+            onDeleteClick={
+              handleDeleteContract
+            }
 
-            onDownloadClick={async (contract) => {
+            onDownloadClick={async (
+              contract
+            ) => {
               setSelectedContract(contract);
               setActiveView('preview');
 
@@ -459,9 +637,13 @@ export default function App() {
           />
         )}
 
+        {/* Create Contract */}
+
         {activeView === 'create' && (
           <AdminCreateContract
-            initialContract={editingContract}
+            initialContract={
+              editingContract
+            }
 
             onSave={handleSaveContract}
 
@@ -471,6 +653,8 @@ export default function App() {
             }}
           />
         )}
+
+        {/* Contract Preview */}
 
         {activeView === 'preview' &&
           selectedContract && (
@@ -486,11 +670,13 @@ export default function App() {
                 setEditingContract(
                   selectedContract
                 );
+
                 setActiveView('create');
               }}
 
               onUpdateContract={(updated) => {
                 setSelectedContract(updated);
+
                 setContracts(
                   getStoredContracts()
                 );
@@ -502,11 +688,13 @@ export default function App() {
             />
           )}
 
+        {/* Office & Map */}
+
         {activeView === 'location' && (
           <MilestoneLocationProfile
-            onBackToContracts={() => {
-              setActiveView('list');
-            }}
+            onBackToContracts={() =>
+              setActiveView('list')
+            }
 
             onCreateContractClick={() => {
               setEditingContract(null);
@@ -518,6 +706,7 @@ export default function App() {
       </main>
 
       {/* Footer */}
+
       <footer className="bg-white border-t border-[#235c27] py-4 px-6 text-center text-xs text-neutral-600 no-print">
 
         <p className="font-bold text-[#52247f]">
@@ -557,8 +746,8 @@ export default function App() {
           </span>
 
         </div>
-      </footer>
 
+      </footer>
     </div>
   );
 }
